@@ -4,15 +4,31 @@ import { DatabaseService } from "@/lib/database"
 export async function GET() {
   try {
     console.log("Fetching sidebar items...")
+
+    console.log("Environment variables check:", {
+      SUPABASE_URL: process.env.SUPABASE_SUPABASE_NEXT_PUBLIC_SUPABASE_URL ? "Present" : "Missing",
+      SUPABASE_KEY: process.env.SUPABASE_SUPABASE_SERVICE_ROLE_KEY ? "Present" : "Missing",
+    })
+
     const items = await DatabaseService.getSidebarItems()
     console.log("Successfully fetched sidebar items:", items.length)
     return NextResponse.json(items)
   } catch (error: any) {
     console.error("Error fetching sidebar items:", error)
+    console.error("Error stack:", error.stack)
+    console.error("Error details:", {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      details: error.details,
+    })
+
     return NextResponse.json(
       {
         error: "Failed to fetch sidebar items",
         details: error.message,
+        errorType: error.name,
+        errorCode: error.code,
       },
       { status: 500 },
     )
@@ -67,10 +83,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(newItem)
   } catch (error: any) {
     console.error("Error creating sidebar item:", error)
+    console.error("Error stack:", error.stack)
+    console.error("Error details:", {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      details: error.details,
+    })
+
     return NextResponse.json(
       {
         error: "Failed to create sidebar item",
         details: error.message,
+        errorType: error.name,
+        errorCode: error.code,
       },
       { status: 500 },
     )

@@ -48,6 +48,19 @@ export function TableView({ itemId, itemName }: TableViewProps) {
   useEffect(() => {
     const loadTabulator = async () => {
       if (typeof window !== "undefined") {
+        const originalError = window.console.error
+        window.console.error = (...args) => {
+          if (
+            args[0] &&
+            typeof args[0] === "string" &&
+            args[0].includes("ResizeObserver loop completed with undelivered notifications")
+          ) {
+            // Suppress ResizeObserver errors as they're usually harmless
+            return
+          }
+          originalError.apply(console, args)
+        }
+
         // Load Tabulator CSS
         const link = document.createElement("link")
         link.rel = "stylesheet"
@@ -106,74 +119,113 @@ export function TableView({ itemId, itemName }: TableViewProps) {
   const initializeTabulator = () => {
     if (!window.Tabulator || !tableRef.current) return
 
-    // Destroy existing table
-    if (tabulatorRef.current) {
-      tabulatorRef.current.destroy()
-    }
+    try {
+      // Destroy existing table
+      if (tabulatorRef.current) {
+        tabulatorRef.current.destroy()
+      }
 
-    // Added right-click context menu to column headers and fixed field mapping
-    const tabulatorColumns = columns.map((col) => ({
-      title: col.name,
-      field: col.name.toLowerCase().replace(/\s+/g, "_"), // Ensure field names are valid
-      editor: getEditorForType(col.data_type),
-      formatter: getFormatterForType(col.data_type),
-      headerSort: true,
-      headerContextMenu: [
-        {
-          label: "Edit Column",
-          action: () => openColumnDialog(col),
-        },
-        {
-          label: "Delete Column",
-          action: () => handleDeleteColumn(col.id),
-        },
-      ],
-      cellEdited: (cell: any) => {
-        const rowData = cell.getRow().getData()
-        updateRowData(rowData.id, rowData)
-      },
-    }))
+      const tabulatorColumns = columns.map((col) => {
+        // Ensure column name exists and is valid
+        const columnName = col.name || `column_${col.id}`
+        const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
 
-    // Add action column
-    tabulatorColumns.push({
-      title: "Actions",
-      field: "actions",
-      width: 100,
-      formatter: () =>
-        '<button class="delete-row-btn text-red-500 hover:text-red-700 px-2 py-1 rounded">Delete</button>',
-      cellClick: (e: any, cell: any) => {
-        if (e.target.classList.contains("delete-row-btn")) {
-          deleteRow(cell.getRow().getData().id)
+        return {
+          title: columnName,
+          field: fieldName,
+          editor: getEditorForType(col.data_type),
+          formatter: getFormatterForType(col.data_type),
+          headerSort: true,
+          headerContextMenu: [
+            {
+              label: "Edit Column",
+              action: () => openColumnDialog(col),
+            },
+            {
+              label: "Delete Column",
+              action: () => handleDeleteColumn(col.id),
+            },
+          ],
+          cellEdited: (cell: any) => {
+            const rowData = cell.getRow().getData()
+            updateRowData(rowData.id, rowData)
+          },
         }
-      },
-    })
-
-    // Fixed data mapping to match field names
-    const mappedData = tableData.map((row) => {
-      const mappedRow: any = { id: row.id }
-      columns.forEach((col) => {
-        const fieldName = col.name.toLowerCase().replace(/\s+/g, "_")
-        mappedRow[fieldName] = row.data[col.name] || getDefaultValueForType(col.data_type, col.default_value)
       })
-      return mappedRow
-    })
 
-    // Initialize Tabulator
-    tabulatorRef.current = new window.Tabulator(tableRef.current, {
-      data: mappedData,
-      columns: tabulatorColumns,
-      layout: "fitColumns",
-      pagination: "local",
-      paginationSize: 50,
-      movableColumns: true,
-      resizableRows: true,
-      addRowPos: "top",
-      history: true,
-      keybindings: {
-        navEnter: "editNextCell", // Enter key moves to next cell and saves
-      },
-      editTriggerEvent: "click",
-    })
+      // Add action column
+      tabulatorColumns.push({
+        title: "Actions",
+        field: "actions",
+        width: 100,
+        formatter: () =>
+          '<button class="delete-row-btn text-red-500 hover:text-red-700 px-2 py-1 rounded">Delete</button>',
+        cellClick: (e: any, cell: any) => {
+          if (e.target.classList.contains("delete-row-btn")) {
+            deleteRow(cell.getRow().getData().id)
+          }
+        },
+      })
+
+      const mappedData = tableData.map((row) => {
+        const mappedRow: any = { id: row.id }
+        columns.forEach((col) => {
+          const columnName = col.name || `column_${col.id}`
+          const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
+          mappedRow[fieldName] = row.data?.[columnName] || getDefaultValueForType(col.data_type, col.default_value)
+        })
+        return mappedRow
+      })
+
+      tabulatorRef.current = new window.Tabulator(tableRef.current, {
+        data: mappedData,
+        columns: tabulatorColumns,
+        layout: "fitColumns",
+        pagination: "local",
+        paginationSize: 50,
+        movableColumns: true,
+        resizableRows: true,
+        addRowPos: "top",
+        history: true,
+        keybindings: {
+          navEnter: "editNextCell", // Enter key moves to next cell and saves
+        },
+        editTriggerEvent: "click",
+        autoResize: false, // Disable auto-resize to prevent observer loops
+        resizableColumns: true,
+        responsiveLayout: "hide", // Better responsive handling
+      })
+
+      let resizeTimeout: NodeJS.Timeout
+      const handleResize = () => {
+        clearTimeout(resizeTimeout)
+        resizeTimeout = setTimeout(() => {
+          if (tabulatorRef.current) {
+            try {
+              tabulatorRef.current.redraw()
+            } catch (error) {
+              // Suppress resize-related errors
+              console.debug("Tabulator resize error (suppressed):", error)
+            }
+          }
+        }, 100)
+      }
+
+      window.addEventListener("resize", handleResize)
+
+      // Cleanup function
+      return () => {
+        window.removeEventListener("resize", handleResize)
+        clearTimeout(resizeTimeout)
+      }
+    } catch (error) {
+      console.error("Error initializing Tabulator:", error)
+      toast({
+        title: "Error",
+        description: "Failed to initialize table view",
+        variant: "destructive",
+      })
+    }
   }
 
   const getEditorForType = (dataType: string) => {
@@ -185,7 +237,6 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       case "date":
         return "date"
       case "boolean":
-        return "tickCross"
       case "checkbox":
         return "tickCross"
       default:
@@ -212,9 +263,10 @@ export function TableView({ itemId, itemName }: TableViewProps) {
     try {
       const originalData: any = {}
       columns.forEach((col) => {
-        const fieldName = col.name.toLowerCase().replace(/\s+/g, "_")
+        const columnName = col.name || `column_${col.id}`
+        const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
         if (data[fieldName] !== undefined) {
-          originalData[col.name] = data[fieldName]
+          originalData[columnName] = data[fieldName]
         }
       })
 
@@ -277,7 +329,8 @@ export function TableView({ itemId, itemName }: TableViewProps) {
 
     const defaultData: any = { id: Date.now() }
     columns.forEach((col) => {
-      const fieldName = col.name.toLowerCase().replace(/\s+/g, "_")
+      const columnName = col.name || `column_${col.id}`
+      const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
       defaultData[fieldName] = getDefaultValueForType(col.data_type, col.default_value)
     })
 
@@ -286,8 +339,9 @@ export function TableView({ itemId, itemName }: TableViewProps) {
     // Map field names back to original column names for database
     const originalData: any = {}
     columns.forEach((col) => {
-      const fieldName = col.name.toLowerCase().replace(/\s+/g, "_")
-      originalData[col.name] = defaultData[fieldName]
+      const columnName = col.name || `column_${col.id}`
+      const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
+      originalData[columnName] = defaultData[fieldName]
     })
 
     // Save to database
@@ -440,9 +494,9 @@ export function TableView({ itemId, itemName }: TableViewProps) {
     if (column) {
       setEditingColumn(column)
       setNewColumn({
-        name: column.name,
-        data_type: column.data_type,
-        is_required: column.is_required,
+        name: column.name || "",
+        data_type: column.data_type || "text",
+        is_required: column.is_required || false,
         default_value: column.default_value || "",
       })
     } else {
@@ -529,7 +583,7 @@ export function TableView({ itemId, itemName }: TableViewProps) {
               <Label htmlFor="columnName">Column Name</Label>
               <Input
                 id="columnName"
-                value={newColumn.name}
+                value={newColumn.name || ""}
                 onChange={(e) => setNewColumn({ ...newColumn, name: e.target.value })}
                 placeholder="Enter column name"
               />
@@ -560,7 +614,7 @@ export function TableView({ itemId, itemName }: TableViewProps) {
               <Label htmlFor="defaultValue">Default Value (Optional)</Label>
               <Input
                 id="defaultValue"
-                value={newColumn.default_value}
+                value={newColumn.default_value || ""}
                 onChange={(e) => setNewColumn({ ...newColumn, default_value: e.target.value })}
                 placeholder="Enter default value"
               />

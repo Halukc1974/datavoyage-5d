@@ -6,7 +6,17 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
     const columnId = Number.parseInt(params.columnId)
     const body = await request.json()
 
-    const column = await DatabaseService.updateTableColumn(columnId, body)
+    const columnData = {
+      column_name: body.name, // Map 'name' to 'column_name'
+      display_name: body.name, // Use same name for display
+      data_type: body.data_type,
+      is_required: body.is_required,
+      default_value: body.default_value || null,
+      sort_order: body.sort_order,
+      width: body.width || 150,
+    }
+
+    const column = await DatabaseService.updateTableColumn(columnId, columnData)
     return NextResponse.json(column)
   } catch (error) {
     console.error("Error updating column:", error)

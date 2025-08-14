@@ -1,11 +1,15 @@
-import { neon } from "@neondatabase/serverless"
+import { createClient } from "@supabase/supabase-js"
 
-// Use the available environment variable
-const sql = neon(process.env.DATABASE_URL_UNPOOLED!)
+const supabaseUrl = "https://xtsczsqpetyumpkawiwl.supabase.co"
+const supabaseServiceKey =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0c2N6c3FwZXR5dW1wa2F3aXdsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUxNDk4NDMsImV4cCI6MjA3MDcyNTg0M30.tEbu8QHtWQM00zLpkt5IuOwpeo61cn7LJ0N8fR6FCU4"
 
-export { sql }
+// Create Supabase client with service role key for server-side operations
+const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-// Database types
+export { supabase }
+
+// Database types (unchanged)
 export interface SidebarItem {
   id: number
   name: string
@@ -49,69 +53,39 @@ export interface TableData {
   updated_at: string
 }
 
-// Database operations
+// Database operations using Supabase
 export class DatabaseService {
-  // Initialize database tables if they don't exist
   static async initializeTables(): Promise<void> {
     try {
-      // Create sidebar_items table
-      await sql`
-        CREATE TABLE IF NOT EXISTS sidebar_items (
-          id SERIAL PRIMARY KEY,
-          name VARCHAR(255) NOT NULL,
-          parent_id INTEGER REFERENCES sidebar_items(id) ON DELETE CASCADE,
-          item_type VARCHAR(20) NOT NULL CHECK (item_type IN ('folder', 'table')),
-          icon VARCHAR(50),
-          sort_order INTEGER DEFAULT 0,
-          created_at TIMESTAMP DEFAULT NOW(),
-          updated_at TIMESTAMP DEFAULT NOW()
-        )
-      `
+      // Check if tables exist by trying to query sidebar_items
+      const { data: existingItems, error: checkError } = await supabase
+        .from("sidebar_items")
+        .select("count", { count: "exact" })
+        .limit(1)
 
-      // Create dynamic_tables table
-      await sql`
-        CREATE TABLE IF NOT EXISTS dynamic_tables (
-          id SERIAL PRIMARY KEY,
-          sidebar_item_id INTEGER REFERENCES sidebar_items(id) ON DELETE CASCADE,
-          table_name VARCHAR(255) NOT NULL,
-          display_name VARCHAR(255) NOT NULL,
-          description TEXT,
-          created_at TIMESTAMP DEFAULT NOW(),
-          updated_at TIMESTAMP DEFAULT NOW()
-        )
-      `
+      if (
+        checkError &&
+        (checkError.message.includes('relation "sidebar_items" does not exist') ||
+          checkError.message.includes("Could not find the table"))
+      ) {
+        throw new Error(`
+Database tables do not exist. Please create them by following these steps:
 
-      // Create table_columns table
-      await sql`
-        CREATE TABLE IF NOT EXISTS table_columns (
-          id SERIAL PRIMARY KEY,
-          table_id INTEGER REFERENCES dynamic_tables(id) ON DELETE CASCADE,
-          column_name VARCHAR(255) NOT NULL,
-          display_name VARCHAR(255) NOT NULL,
-          data_type VARCHAR(20) NOT NULL CHECK (data_type IN ('text', 'number', 'date', 'boolean', 'decimal', 'double', 'checkbox')),
-          is_required BOOLEAN DEFAULT FALSE,
-          default_value TEXT,
-          sort_order INTEGER DEFAULT 0,
-          width INTEGER DEFAULT 150,
-          created_at TIMESTAMP DEFAULT NOW(),
-          updated_at TIMESTAMP DEFAULT NOW()
-        )
-      `
+1. Go to your Supabase dashboard: https://supabase.com/dashboard
+2. Select your 'datavoyage' project  
+3. Go to the SQL Editor
+4. Copy and paste the content from 'scripts/supabase-setup.sql' and run it
 
-      // Create table_data table
-      await sql`
-        CREATE TABLE IF NOT EXISTS table_data (
-          id SERIAL PRIMARY KEY,
-          table_id INTEGER REFERENCES dynamic_tables(id) ON DELETE CASCADE,
-          row_data JSONB NOT NULL,
-          created_at TIMESTAMP DEFAULT NOW(),
-          updated_at TIMESTAMP DEFAULT NOW()
-        )
-      `
+OR
 
-      // Check if we need to seed initial data
-      const existingItems = await sql`SELECT COUNT(*) as count FROM sidebar_items`
-      if (existingItems[0].count === 0) {
+Use the 'Run Script' button in v0 for the 'scripts/supabase-setup.sql' file.
+
+This will create all required tables (sidebar_items, dynamic_tables, table_columns, table_data) with sample data.
+        `)
+      }
+
+      // If tables exist but are empty, seed initial data
+      if (existingItems && existingItems.length === 0) {
         await this.seedInitialData()
       }
     } catch (error) {
@@ -123,43 +97,139 @@ export class DatabaseService {
   static async seedInitialData(): Promise<void> {
     try {
       // Create root "Tables" folder
-      const tablesFolder = await sql`
-        INSERT INTO sidebar_items (name, parent_id, item_type, icon, sort_order)
-        VALUES ('Tables', NULL, 'folder', 'folder', 0)
-        RETURNING *
-      `
+      const { data: tablesFolder, error: folderError } = await supabase
+        .from("sidebar_items")
+        .insert({
+          name: "Tables",
+          parent_id: null,
+          item_type: "folder",
+          icon: "folder",
+          sort_order: 0,
+        })
+        .select()
+        .single()
+
+      if (folderError) throw folderError
 
       // Create sample table sidebar item
-      const sampleTableItem = await sql`
-        INSERT INTO sidebar_items (name, parent_id, item_type, icon, sort_order)
-        VALUES ('Sample Customers', ${tablesFolder[0].id}, 'table', 'table', 0)
-        RETURNING *
-      `
+      const { data: sampleTableItem, error: tableItemError } = await supabase
+        .from("sidebar_items")
+        .insert({
+          name: "Sample Customers",
+          parent_id: tablesFolder.id,
+          item_type: "table",
+          icon: "table",
+          sort_order: 0,
+        })
+        .select()
+        .single()
+
+      if (tableItemError) throw tableItemError
 
       // Create the dynamic table
-      const dynamicTable = await sql`
-        INSERT INTO dynamic_tables (sidebar_item_id, table_name, display_name, description)
-        VALUES (${sampleTableItem[0].id}, 'sample_customers', 'Sample Customers', 'A sample customer table to get you started')
-        RETURNING *
-      `
+      const { data: dynamicTable, error: dynamicTableError } = await supabase
+        .from("dynamic_tables")
+        .insert({
+          sidebar_item_id: sampleTableItem.id,
+          table_name: "sample_customers",
+          display_name: "Sample Customers",
+          description: "A sample customer table to get you started",
+        })
+        .select()
+        .single()
+
+      if (dynamicTableError) throw dynamicTableError
 
       // Create sample columns
-      await sql`
-        INSERT INTO table_columns (table_id, column_name, display_name, data_type, is_required, sort_order, width) VALUES
-        (${dynamicTable[0].id}, 'name', 'Customer Name', 'text', true, 0, 200),
-        (${dynamicTable[0].id}, 'email', 'Email Address', 'text', true, 1, 250),
-        (${dynamicTable[0].id}, 'phone', 'Phone Number', 'text', false, 2, 150),
-        (${dynamicTable[0].id}, 'active', 'Active', 'checkbox', false, 3, 100),
-        (${dynamicTable[0].id}, 'created_date', 'Created Date', 'date', false, 4, 150)
-      `
+      const columns = [
+        {
+          table_id: dynamicTable.id,
+          column_name: "name",
+          display_name: "Customer Name",
+          data_type: "text",
+          is_required: true,
+          sort_order: 0,
+          width: 200,
+        },
+        {
+          table_id: dynamicTable.id,
+          column_name: "email",
+          display_name: "Email Address",
+          data_type: "text",
+          is_required: true,
+          sort_order: 1,
+          width: 250,
+        },
+        {
+          table_id: dynamicTable.id,
+          column_name: "phone",
+          display_name: "Phone Number",
+          data_type: "text",
+          is_required: false,
+          sort_order: 2,
+          width: 150,
+        },
+        {
+          table_id: dynamicTable.id,
+          column_name: "active",
+          display_name: "Active",
+          data_type: "checkbox",
+          is_required: false,
+          sort_order: 3,
+          width: 100,
+        },
+        {
+          table_id: dynamicTable.id,
+          column_name: "created_date",
+          display_name: "Created Date",
+          data_type: "date",
+          is_required: false,
+          sort_order: 4,
+          width: 150,
+        },
+      ]
+
+      const { error: columnsError } = await supabase.from("table_columns").insert(columns)
+
+      if (columnsError) throw columnsError
 
       // Create sample data
-      await sql`
-        INSERT INTO table_data (table_id, row_data) VALUES
-        (${dynamicTable[0].id}, '{"name": "John Doe", "email": "john@example.com", "phone": "+1-555-0123", "active": true, "created_date": "2024-01-15"}'),
-        (${dynamicTable[0].id}, '{"name": "Jane Smith", "email": "jane@example.com", "phone": "+1-555-0124", "active": true, "created_date": "2024-01-16"}'),
-        (${dynamicTable[0].id}, '{"name": "Bob Johnson", "email": "bob@example.com", "phone": "+1-555-0125", "active": false, "created_date": "2024-01-17"}')
-      `
+      const sampleData = [
+        {
+          table_id: dynamicTable.id,
+          row_data: {
+            name: "John Doe",
+            email: "john@example.com",
+            phone: "+1-555-0123",
+            active: true,
+            created_date: "2024-01-15",
+          },
+        },
+        {
+          table_id: dynamicTable.id,
+          row_data: {
+            name: "Jane Smith",
+            email: "jane@example.com",
+            phone: "+1-555-0124",
+            active: true,
+            created_date: "2024-01-16",
+          },
+        },
+        {
+          table_id: dynamicTable.id,
+          row_data: {
+            name: "Bob Johnson",
+            email: "bob@example.com",
+            phone: "+1-555-0125",
+            active: false,
+            created_date: "2024-01-17",
+          },
+        },
+      ]
+
+      const { error: dataError } = await supabase.from("table_data").insert(sampleData)
+
+      if (dataError) throw dataError
     } catch (error) {
       console.error("Error seeding initial data:", error)
       throw error
@@ -168,150 +238,209 @@ export class DatabaseService {
 
   static async getSidebarItems(): Promise<SidebarItem[]> {
     try {
-      const result = await sql`
-        SELECT * FROM sidebar_items 
-        ORDER BY parent_id NULLS FIRST, sort_order, name
-      `
-      return result as SidebarItem[]
-    } catch (error: any) {
-      if (error.message?.includes('relation "sidebar_items" does not exist')) {
-        await this.initializeTables()
-        const result = await sql`
-          SELECT * FROM sidebar_items 
-          ORDER BY parent_id NULLS FIRST, sort_order, name
-        `
-        return result as SidebarItem[]
-      }
+      await this.initializeTables()
+
+      const { data, error } = await supabase
+        .from("sidebar_items")
+        .select("*")
+        .order("parent_id", { nullsFirst: true })
+        .order("sort_order")
+        .order("name")
+
+      if (error) throw error
+      return data as SidebarItem[]
+    } catch (error) {
+      console.error("Error getting sidebar items:", error)
       throw error
     }
   }
 
   static async createSidebarItem(item: Omit<SidebarItem, "id" | "created_at" | "updated_at">): Promise<SidebarItem> {
-    const result = await sql`
-      INSERT INTO sidebar_items (name, parent_id, item_type, icon, sort_order)
-      VALUES (${item.name}, ${item.parent_id}, ${item.item_type}, ${item.icon}, ${item.sort_order})
-      RETURNING *
-    `
-    return result[0] as SidebarItem
+    const { data, error } = await supabase
+      .from("sidebar_items")
+      .insert({
+        name: item.name,
+        parent_id: item.parent_id,
+        item_type: item.item_type,
+        icon: item.icon,
+        sort_order: item.sort_order,
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+    return data as SidebarItem
   }
 
   static async updateSidebarItem(id: number, updates: Partial<SidebarItem>): Promise<SidebarItem> {
-    const result = await sql`
-      UPDATE sidebar_items 
-      SET name = COALESCE(${updates.name}, name),
-          parent_id = COALESCE(${updates.parent_id}, parent_id),
-          item_type = COALESCE(${updates.item_type}, item_type),
-          icon = COALESCE(${updates.icon}, icon),
-          sort_order = COALESCE(${updates.sort_order}, sort_order),
-          updated_at = NOW()
-      WHERE id = ${id}
-      RETURNING *
-    `
-    return result[0] as SidebarItem
+    const { data, error } = await supabase
+      .from("sidebar_items")
+      .update({
+        ...(updates.name && { name: updates.name }),
+        ...(updates.parent_id !== undefined && { parent_id: updates.parent_id }),
+        ...(updates.item_type && { item_type: updates.item_type }),
+        ...(updates.icon && { icon: updates.icon }),
+        ...(updates.sort_order !== undefined && { sort_order: updates.sort_order }),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select()
+      .single()
+
+    if (error) throw error
+    return data as SidebarItem
   }
 
   static async deleteSidebarItem(id: number): Promise<void> {
-    await sql`DELETE FROM sidebar_items WHERE id = ${id}`
+    const { error } = await supabase.from("sidebar_items").delete().eq("id", id)
+
+    if (error) throw error
   }
 
   // Table operations
   static async getDynamicTable(id: number): Promise<DynamicTable | null> {
-    const result = await sql`
-      SELECT * FROM dynamic_tables WHERE id = ${id}
-    `
-    return (result[0] as DynamicTable) || null
+    const { data, error } = await supabase.from("dynamic_tables").select("*").eq("id", id).single()
+
+    if (error) {
+      if (error.code === "PGRST116") return null // No rows returned
+      throw error
+    }
+    return data as DynamicTable
   }
 
   static async getDynamicTableBySidebarId(sidebarId: number): Promise<DynamicTable | null> {
-    const result = await sql`
-      SELECT * FROM dynamic_tables WHERE sidebar_item_id = ${sidebarId}
-    `
-    return (result[0] as DynamicTable) || null
+    const { data, error } = await supabase.from("dynamic_tables").select("*").eq("sidebar_item_id", sidebarId).single()
+
+    if (error) {
+      if (error.code === "PGRST116") return null // No rows returned
+      throw error
+    }
+    return data as DynamicTable
   }
 
   static async createDynamicTable(
     table: Omit<DynamicTable, "id" | "created_at" | "updated_at">,
   ): Promise<DynamicTable> {
-    const result = await sql`
-      INSERT INTO dynamic_tables (sidebar_item_id, table_name, display_name, description)
-      VALUES (${table.sidebar_item_id}, ${table.table_name}, ${table.display_name}, ${table.description})
-      RETURNING *
-    `
-    return result[0] as DynamicTable
+    const { data, error } = await supabase
+      .from("dynamic_tables")
+      .insert({
+        sidebar_item_id: table.sidebar_item_id,
+        table_name: table.table_name,
+        display_name: table.display_name,
+        description: table.description,
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+    return data as DynamicTable
   }
 
   // Column operations
   static async getTableColumns(tableId: number): Promise<TableColumn[]> {
-    const result = await sql`
-      SELECT * FROM table_columns 
-      WHERE table_id = ${tableId}
-      ORDER BY sort_order, column_name
-    `
-    return result as TableColumn[]
+    const { data, error } = await supabase
+      .from("table_columns")
+      .select("*")
+      .eq("table_id", tableId)
+      .order("sort_order")
+      .order("column_name")
+
+    if (error) throw error
+    return data as TableColumn[]
   }
 
   static async createTableColumn(column: Omit<TableColumn, "id" | "created_at" | "updated_at">): Promise<TableColumn> {
-    const result = await sql`
-      INSERT INTO table_columns (table_id, column_name, display_name, data_type, is_required, default_value, sort_order, width)
-      VALUES (${column.table_id}, ${column.column_name}, ${column.display_name}, ${column.data_type}, ${column.is_required}, ${column.default_value}, ${column.sort_order}, ${column.width})
-      RETURNING *
-    `
-    return result[0] as TableColumn
+    const { data, error } = await supabase
+      .from("table_columns")
+      .insert({
+        table_id: column.table_id,
+        column_name: column.column_name,
+        display_name: column.display_name,
+        data_type: column.data_type,
+        is_required: column.is_required,
+        default_value: column.default_value,
+        sort_order: column.sort_order,
+        width: column.width,
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+    return data as TableColumn
   }
 
   static async updateTableColumn(id: number, updates: Partial<TableColumn>): Promise<TableColumn> {
-    const result = await sql`
-      UPDATE table_columns 
-      SET column_name = COALESCE(${updates.column_name}, column_name),
-          display_name = COALESCE(${updates.display_name}, display_name),
-          data_type = COALESCE(${updates.data_type}, data_type),
-          is_required = COALESCE(${updates.is_required}, is_required),
-          default_value = COALESCE(${updates.default_value}, default_value),
-          sort_order = COALESCE(${updates.sort_order}, sort_order),
-          width = COALESCE(${updates.width}, width),
-          updated_at = NOW()
-      WHERE id = ${id}
-      RETURNING *
-    `
-    return result[0] as TableColumn
+    const { data, error } = await supabase
+      .from("table_columns")
+      .update({
+        ...(updates.column_name && { column_name: updates.column_name }),
+        ...(updates.display_name && { display_name: updates.display_name }),
+        ...(updates.data_type && { data_type: updates.data_type }),
+        ...(updates.is_required !== undefined && { is_required: updates.is_required }),
+        ...(updates.default_value !== undefined && { default_value: updates.default_value }),
+        ...(updates.sort_order !== undefined && { sort_order: updates.sort_order }),
+        ...(updates.width !== undefined && { width: updates.width }),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select()
+      .single()
+
+    if (error) throw error
+    return data as TableColumn
   }
 
   static async deleteTableColumn(id: number): Promise<void> {
-    await sql`DELETE FROM table_columns WHERE id = ${id}`
+    const { error } = await supabase.from("table_columns").delete().eq("id", id)
+
+    if (error) throw error
   }
 
   // Data operations
   static async getTableData(tableId: number, limit = 100, offset = 0): Promise<TableData[]> {
-    const result = await sql`
-      SELECT * FROM table_data 
-      WHERE table_id = ${tableId}
-      ORDER BY id
-      LIMIT ${limit} OFFSET ${offset}
-    `
-    return result as TableData[]
+    const { data, error } = await supabase
+      .from("table_data")
+      .select("*")
+      .eq("table_id", tableId)
+      .order("id")
+      .range(offset, offset + limit - 1)
+
+    if (error) throw error
+    return data as TableData[]
   }
 
   static async createTableRow(tableId: number, rowData: Record<string, any>): Promise<TableData> {
-    const result = await sql`
-      INSERT INTO table_data (table_id, row_data)
-      VALUES (${tableId}, ${JSON.stringify(rowData)})
-      RETURNING *
-    `
-    return result[0] as TableData
+    const { data, error } = await supabase
+      .from("table_data")
+      .insert({
+        table_id: tableId,
+        row_data: rowData,
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+    return data as TableData
   }
 
   static async updateTableRow(id: number, rowData: Record<string, any>): Promise<TableData> {
-    const result = await sql`
-      UPDATE table_data 
-      SET row_data = ${JSON.stringify(rowData)},
-          updated_at = NOW()
-      WHERE id = ${id}
-      RETURNING *
-    `
-    return result[0] as TableData
+    const { data, error } = await supabase
+      .from("table_data")
+      .update({
+        row_data: rowData,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select()
+      .single()
+
+    if (error) throw error
+    return data as TableData
   }
 
   static async deleteTableRow(id: number): Promise<void> {
-    await sql`DELETE FROM table_data WHERE id = ${id}`
+    const { error } = await supabase.from("table_data").delete().eq("id", id)
+
+    if (error) throw error
   }
 }
