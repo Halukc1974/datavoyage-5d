@@ -9,6 +9,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { toast } from "@/hooks/use-toast"
 import { Plus, Settings, Trash2 } from "lucide-react"
+// Removed unused DateTime import
+
+// Allow assigning Tabulator to window in the browser without TS errors
+declare global {
+  interface Window {
+    Tabulator?: any
+  }
+}
+
 
 interface TableViewProps {
   itemId: number
@@ -67,6 +76,17 @@ export function TableView({ itemId, itemName }: TableViewProps) {
         link.href = "https://unpkg.com/tabulator-tables@6.2.1/dist/css/tabulator.min.css"
         document.head.appendChild(link)
 
+        // Ensure luxon is available for Tabulator's datetime formatter
+        try {
+          const luxon = await import("luxon")
+          // Tabulator expects a global DateTime (and sometimes window.luxon)
+          ;(window as any).DateTime = luxon.DateTime
+          ;(window as any).luxon = luxon
+        } catch (e) {
+          // If luxon can't be loaded, Tabulator will warn when trying to use datetime formatter
+          console.warn("luxon import failed (datetime formatter will be disabled):", e)
+        }
+
         // Load Tabulator JS
         const { TabulatorFull } = await import("tabulator-tables")
         window.Tabulator = TabulatorFull
@@ -83,8 +103,14 @@ export function TableView({ itemId, itemName }: TableViewProps) {
   // Initialize Tabulator when data is loaded
   useEffect(() => {
     if (columns.length > 0 && window.Tabulator && tableRef.current) {
-      initializeTabulator()
+      const cleanup = initializeTabulator()
+      // If initializeTabulator returned a cleanup function, use it when effect unmounts or deps change
+      return () => {
+        if (typeof cleanup === "function") cleanup()
+      }
     }
+    // If no table was initialized, nothing to clean up
+    return undefined
   }, [columns, tableData])
 
   const loadTableData = async () => {
@@ -125,7 +151,7 @@ export function TableView({ itemId, itemName }: TableViewProps) {
         tabulatorRef.current.destroy()
       }
 
-      const tabulatorColumns = columns.map((col) => {
+  const tabulatorColumns: any[] = columns.map((col) => {
         // Ensure column name exists and is valid
         const columnName = col.name || `column_${col.id}`
         const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
@@ -158,11 +184,24 @@ export function TableView({ itemId, itemName }: TableViewProps) {
         title: "Actions",
         field: "actions",
         width: 100,
-        formatter: () =>
-          '<button class="delete-row-btn text-red-500 hover:text-red-700 px-2 py-1 rounded">Delete</button>',
+      formatter: () =>
+        '<button class="delete-row-btn text-red-500 hover:text-red-700 px-2 py-1 rounded" aria-label="Delete">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">' +
+        '<path d="M3 6h18" />' +
+        '<path d="M8 6v14a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V6" />' +
+        '<path d="M10 11v6" />' +
+        '<path d="M14 11v6" />' +
+        '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />' +
+        '</svg>' +
+        '</button>',
         cellClick: (e: any, cell: any) => {
-          if (e.target.classList.contains("delete-row-btn")) {
-            deleteRow(cell.getRow().getData().id)
+          // support clicking the svg inside the button by using closest
+          const btn = (e.target as HTMLElement).closest?.(".delete-row-btn")
+          if (btn) {
+            const confirmed = window.confirm("Are you sure you want to delete this row?")
+            if (confirmed) {
+              deleteRow(cell.getRow().getData().id)
+            }
           }
         },
       })
@@ -196,10 +235,11 @@ export function TableView({ itemId, itemName }: TableViewProps) {
         responsiveLayout: "hide", // Better responsive handling
       })
 
-      let resizeTimeout: NodeJS.Timeout
+      // Use a browser-friendly timeout type
+      let resizeTimeout: number | undefined
       const handleResize = () => {
-        clearTimeout(resizeTimeout)
-        resizeTimeout = setTimeout(() => {
+        if (resizeTimeout) clearTimeout(resizeTimeout)
+        resizeTimeout = window.setTimeout(() => {
           if (tabulatorRef.current) {
             try {
               tabulatorRef.current.redraw()
@@ -216,7 +256,7 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       // Cleanup function
       return () => {
         window.removeEventListener("resize", handleResize)
-        clearTimeout(resizeTimeout)
+        if (resizeTimeout) clearTimeout(resizeTimeout)
       }
     } catch (error) {
       console.error("Error initializing Tabulator:", error)
@@ -250,7 +290,24 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       case "checkbox":
         return "tickCross"
       case "date":
-        return "datetime"
+        // Return a safe formatter that uses luxon if available on window, otherwise falls back
+        return (cell: any) => {
+          try {
+            const v = cell.getValue()
+            if (!v) return ""
+            // If luxon DateTime is available, use it to format; otherwise return raw value
+            if ((window as any).DateTime && typeof (window as any).DateTime.fromISO === "function") {
+              try {
+                return (window as any).DateTime.fromISO(v).toLocaleString()
+              } catch (e) {
+                return String(v)
+              }
+            }
+            return String(v)
+          } catch (e) {
+            return ""
+          }
+        }
       case "decimal":
       case "double":
         return (cell: any) => Number.parseFloat(cell.getValue()).toFixed(2)
@@ -277,8 +334,17 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       })
 
       if (!response.ok) {
-        throw new Error("Failed to update row")
+        let errBody: any
+        try {
+          errBody = await response.json()
+        } catch (e) {
+          errBody = await response.text()
+        }
+        console.error("Update row failed:", errBody)
+        throw new Error(typeof errBody === "string" ? errBody : errBody?.error || "Failed to update row")
       }
+
+      const respData = await response.json()
 
       toast({
         title: "Success",
@@ -286,12 +352,13 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       })
     } catch (error) {
       console.error("Error updating row:", error)
+      const message = (error as any)?.message || "Failed to update row"
       toast({
         title: "Error",
-        description: "Failed to update row",
+        description: message,
         variant: "destructive",
       })
-      // Revert the change in Tabulator
+      // Revert the change in Tabulator by reloading data
       loadTableData()
     }
   }
@@ -334,7 +401,7 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       defaultData[fieldName] = getDefaultValueForType(col.data_type, col.default_value)
     })
 
-    tabulatorRef.current.addRow(defaultData, true)
+  tabulatorRef.current.addRow(defaultData, true)
 
     // Map field names back to original column names for database
     const originalData: any = {}
@@ -344,11 +411,11 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       originalData[columnName] = defaultData[fieldName]
     })
 
-    // Save to database
-    createNewRow(originalData)
+    // Save to database; pass the client temp id so we can update the right row after server returns
+    createNewRow(originalData, defaultData.id)
   }
 
-  const createNewRow = async (data: any) => {
+  const createNewRow = async (data: any, clientTempId?: number) => {
     try {
       const response = await fetch(`/api/tables/${itemId}/data`, {
         method: "POST",
@@ -357,27 +424,62 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       })
 
       if (!response.ok) {
-        throw new Error("Failed to create row")
+        let errBody: any
+        try {
+          errBody = await response.json()
+        } catch (e) {
+          errBody = await response.text()
+        }
+        console.error("Create row failed:", errBody)
+        throw new Error(typeof errBody === "string" ? errBody : errBody?.error || "Failed to create row")
       }
 
       const newRow = await response.json()
 
-      // Update the row ID in Tabulator
-      const row = tabulatorRef.current.getRow(data.id)
-      row.update({ ...data, id: newRow.id })
+      // Update the row in Tabulator. Prefer using clientTempId if provided.
+      let row: any = null
+      if (clientTempId) {
+        row = tabulatorRef.current.getRow(clientTempId)
+      }
+      // Fallback: try to find a row with matching data fields (expensive, but safe)
+      if (!row) {
+        const rows = tabulatorRef.current.getRows()
+        row = rows.find((r: any) => {
+          const rdata = r.getData()
+          // attempt best-effort match: check if all mapped fields match
+          return Object.keys(data).every((key) => rdata[key] === data[key])
+        })
+      }
+      if (row) {
+        row.update({ ...data, id: newRow.id })
+      } else {
+        // If we couldn't find the client row, just add the returned row to Tabulator
+        tabulatorRef.current.addRow({ ...mapServerRowToTabulator(newRow) }, true)
+      }
 
       toast({
         title: "Success",
         description: "Row created successfully",
       })
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error creating row:", error)
       toast({
         title: "Error",
-        description: "Failed to create row",
+        description: error?.message || "Failed to create row",
         variant: "destructive",
       })
     }
+  }
+
+  const mapServerRowToTabulator = (serverRow: any) => {
+    // serverRow is expected to have { id, table_id, row_data }
+    const mapped: any = { id: serverRow.id }
+    columns.forEach((col) => {
+      const columnName = col.name || `column_${col.id}`
+      const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
+      mapped[fieldName] = serverRow.row_data?.[columnName] ?? getDefaultValueForType(col.data_type, col.default_value)
+    })
+    return mapped
   }
 
   const getDefaultValueForType = (dataType: string, defaultValue?: string) => {

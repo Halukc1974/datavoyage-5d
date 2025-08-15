@@ -391,6 +391,36 @@ This will create all required tables (sidebar_items, dynamic_tables, table_colum
       .single()
 
     if (error) throw error
+    // If a default value was provided, set it on existing rows that don't have this column
+    try {
+      if (column.default_value !== undefined && column.default_value !== null && column.default_value !== "") {
+        const columnName = column.column_name
+        const { data: existingRows, error: fetchError } = await supabase
+          .from("table_data")
+          .select("id, row_data")
+          .eq("table_id", column.table_id)
+
+        if (!fetchError && existingRows && existingRows.length > 0) {
+          for (const row of existingRows) {
+            const updatedRowData = { ...(row.row_data || {}) }
+            if (!(columnName in updatedRowData)) {
+              updatedRowData[columnName] = column.default_value
+              const { error: updateError } = await supabase
+                .from("table_data")
+                .update({ row_data: updatedRowData, updated_at: new Date().toISOString() })
+                .eq("id", row.id)
+
+              if (updateError) {
+                console.error(`Error setting default for row ${row.id}:`, updateError)
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Error applying default values to existing rows:", e)
+    }
+
     return data as TableColumn
   }
 
