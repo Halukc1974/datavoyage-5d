@@ -11,7 +11,20 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     }
 
     const columns = await DatabaseService.getTableColumns(dynamicTable.id)
-    return NextResponse.json(columns)
+
+    const mappedColumns = columns.map((col) => ({
+      id: col.id,
+      name: col.display_name || col.column_name, // Use display_name as the primary name
+      data_type: col.data_type,
+      is_required: col.is_required,
+      default_value: col.default_value,
+      sort_order: col.sort_order,
+      column_name: col.column_name, // Keep original column_name for data mapping
+      display_name: col.display_name,
+      width: col.width,
+    }))
+
+    return NextResponse.json(mappedColumns)
   } catch (error) {
     console.error("Error fetching columns:", error)
     return NextResponse.json({ error: "Failed to fetch columns" }, { status: 500 })
