@@ -56,6 +56,7 @@ export function TableView({ itemId, itemName }: TableViewProps) {
   })
   const tabulatorRef = useRef<any>(null)
   const tableRef = useRef<HTMLDivElement>(null)
+  const requestIdRef = useRef(0)
 
   // Load Tabulator dynamically
   useEffect(() => {
@@ -108,10 +109,43 @@ export function TableView({ itemId, itemName }: TableViewProps) {
     loadTabulator()
   }, [])
 
-  // Load table data and columns
+  // When the selected item changes, immediately reset state and destroy any existing Tabulator
+  // to avoid showing stale/previous table contents while the new table loads.
   useEffect(() => {
-    loadTableData()
+    // Reset local state synchronously so UI renders the loading/no-columns state
+    setColumns([])
+    setTableData([])
+    setLoading(true)
+
+    // Destroy any existing Tabulator instance to remove stale DOM/content
+    try {
+      if (tabulatorRef.current) {
+        tabulatorRef.current.destroy()
+        tabulatorRef.current = null
+      }
+    } catch (e) {
+      console.warn("Error destroying existing Tabulator on item change:", e)
+    }
+
+    // Then load the new table data
+    void loadTableData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [itemId])
+
+  // If columns become empty (for example a newly created table with no columns),
+  // ensure any mounted Tabulator is destroyed so the old table UI doesn't remain visible.
+  useEffect(() => {
+    if (columns.length === 0) {
+      try {
+        if (tabulatorRef.current) {
+          tabulatorRef.current.destroy()
+          tabulatorRef.current = null
+        }
+      } catch (e) {
+        console.warn("Error destroying Tabulator when columns cleared:", e)
+      }
+    }
+  }, [columns])
 
   // Initialize Tabulator when data is loaded
   useEffect(() => {
@@ -127,25 +161,32 @@ export function TableView({ itemId, itemName }: TableViewProps) {
   }, [columns, tableData])
 
   const loadTableData = async () => {
+    // Protect against stale responses by using an incrementing request id.
+    const reqId = ++requestIdRef.current
     try {
       setLoading(true)
 
       // Load columns
       const columnsResponse = await fetch(`/api/tables/${itemId}/columns`)
-      if (columnsResponse.ok) {
-        const columnsData = await columnsResponse.json()
-        setColumns(columnsData)
-      }
+      if (!columnsResponse.ok) throw new Error(`Failed to load columns: ${columnsResponse.status}`)
+      const columnsData = await columnsResponse.json()
+
+      // If another request started after this one, ignore this response
+      if (reqId !== requestIdRef.current) return
+      setColumns(columnsData)
 
       // Load table data
       const dataResponse = await fetch(`/api/tables/${itemId}/data`)
-      if (dataResponse.ok) {
-  const data = await dataResponse.json()
-  // Normalize server shape { id, table_id, row_data } -> client shape { id, data }
-  const normalized = (data || []).map((r: any) => ({ id: r.id, data: r.row_data || {} }))
-  setTableData(normalized)
-      }
+      if (!dataResponse.ok) throw new Error(`Failed to load table data: ${dataResponse.status}`)
+      const data = await dataResponse.json()
+
+      if (reqId !== requestIdRef.current) return
+      // Normalize server shape { id, table_id, row_data } -> client shape { id, data }
+      const normalized = (data || []).map((r: any) => ({ id: r.id, data: r.row_data || {} }))
+      setTableData(normalized)
     } catch (error) {
+      // If the request was superseded, don't show an error toast
+      if (requestIdRef.current !== reqId) return
       console.error("Error loading table data:", error)
       toast({
         title: "Error",
@@ -153,7 +194,7 @@ export function TableView({ itemId, itemName }: TableViewProps) {
         variant: "destructive",
       })
     } finally {
-      setLoading(false)
+      if (requestIdRef.current === reqId) setLoading(false)
     }
   }
 

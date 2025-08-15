@@ -165,10 +165,6 @@ export function DynamicSidebar({ selectedItem, onItemSelect }: DynamicSidebarPro
   }
 
   const handleDeleteItem = async (item: SidebarItem) => {
-    // Confirm before deleting
-    const confirmed = typeof window !== "undefined" ? window.confirm(`Delete "${item.name}" and all its children?`) : true
-    if (!confirmed) return
-
     try {
       const response = await fetch(`/api/sidebar/${item.id}`, {
         method: "DELETE",
