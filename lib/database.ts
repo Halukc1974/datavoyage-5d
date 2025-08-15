@@ -102,9 +102,9 @@ This will create all required tables (sidebar_items, dynamic_tables, table_colum
         .insert({
           name: "Tables",
           parent_id: null,
-          item_type: "folder",
+          item_type: "folder", // Changed from 'type' to 'item_type' to match SQL schema
           icon: "folder",
-          sort_order: 0,
+          sort_order: 1,
         })
         .select()
         .single()
@@ -117,9 +117,9 @@ This will create all required tables (sidebar_items, dynamic_tables, table_colum
         .insert({
           name: "Sample Customers",
           parent_id: tablesFolder.id,
-          item_type: "table",
+          item_type: "table", // Changed from 'type' to 'item_type' to match SQL schema
           icon: "table",
-          sort_order: 0,
+          sort_order: 1,
         })
         .select()
         .single()
@@ -242,13 +242,22 @@ This will create all required tables (sidebar_items, dynamic_tables, table_colum
 
       const { data, error } = await supabase
         .from("sidebar_items")
-        .select("*")
+        .select("id, name, parent_id, item_type, icon, sort_order, created_at, updated_at") // Changed 'type' to 'item_type' to match SQL schema
         .order("parent_id", { nullsFirst: true })
-        .order("sort_order")
         .order("name")
 
       if (error) throw error
-      return data as SidebarItem[]
+
+      return (data || []).map((item) => ({
+        id: item.id,
+        name: item.name,
+        parent_id: item.parent_id,
+        item_type: item.item_type, // Direct mapping since column names match
+        icon: item.icon || (item.item_type === "table" ? "table" : "folder"), // Use item.item_type
+        sort_order: item.sort_order || 0, // Use actual sort_order from database
+        created_at: item.created_at,
+        updated_at: item.updated_at,
+      })) as SidebarItem[]
     } catch (error) {
       console.error("Error getting sidebar items:", error)
       throw error
@@ -261,34 +270,50 @@ This will create all required tables (sidebar_items, dynamic_tables, table_colum
       .insert({
         name: item.name,
         parent_id: item.parent_id,
-        item_type: item.item_type,
+        item_type: item.item_type, // Changed from 'type' to 'item_type' to match SQL schema
         icon: item.icon,
-        sort_order: item.sort_order,
+        sort_order: item.sort_order || 0,
       })
       .select()
       .single()
 
     if (error) throw error
-    return data as SidebarItem
+
+    return {
+      id: data.id,
+      name: data.name,
+      parent_id: data.parent_id,
+      item_type: data.item_type, // Direct mapping since column names match
+      icon: data.icon || (data.item_type === "table" ? "table" : "folder"), // Use data.item_type
+      sort_order: data.sort_order || 0,
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+    } as SidebarItem
   }
 
   static async updateSidebarItem(id: number, updates: Partial<SidebarItem>): Promise<SidebarItem> {
-    const { data, error } = await supabase
-      .from("sidebar_items")
-      .update({
-        ...(updates.name && { name: updates.name }),
-        ...(updates.parent_id !== undefined && { parent_id: updates.parent_id }),
-        ...(updates.item_type && { item_type: updates.item_type }),
-        ...(updates.icon && { icon: updates.icon }),
-        ...(updates.sort_order !== undefined && { sort_order: updates.sort_order }),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", id)
-      .select()
-      .single()
+    const updateData: any = {}
+
+    if (updates.name) updateData.name = updates.name
+    if (updates.parent_id !== undefined) updateData.parent_id = updates.parent_id
+    if (updates.item_type) updateData.item_type = updates.item_type // Changed from 'type' to 'item_type' to match SQL schema
+    if (updates.icon) updateData.icon = updates.icon
+    if (updates.sort_order !== undefined) updateData.sort_order = updates.sort_order
+
+    const { data, error } = await supabase.from("sidebar_items").update(updateData).eq("id", id).select().single()
 
     if (error) throw error
-    return data as SidebarItem
+
+    return {
+      id: data.id,
+      name: data.name,
+      parent_id: data.parent_id,
+      item_type: data.item_type, // Direct mapping since column names match
+      icon: data.icon || (data.item_type === "table" ? "table" : "folder"), // Use data.item_type
+      sort_order: data.sort_order || 0,
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+    } as SidebarItem
   }
 
   static async deleteSidebarItem(id: number): Promise<void> {
@@ -370,6 +395,18 @@ This will create all required tables (sidebar_items, dynamic_tables, table_colum
   }
 
   static async updateTableColumn(id: number, updates: Partial<TableColumn>): Promise<TableColumn> {
+    const { data: currentColumn, error: fetchError } = await supabase
+      .from("table_columns")
+      .select("*")
+      .eq("id", id)
+      .single()
+
+    if (fetchError) throw fetchError
+
+    const oldColumnName = currentColumn.column_name
+    const newColumnName = updates.column_name
+
+    // Update the column metadata
     const { data, error } = await supabase
       .from("table_columns")
       .update({
@@ -387,6 +424,41 @@ This will create all required tables (sidebar_items, dynamic_tables, table_colum
       .single()
 
     if (error) throw error
+
+    if (newColumnName && oldColumnName !== newColumnName) {
+      // Get all data rows for this table
+      const { data: tableData, error: dataFetchError } = await supabase
+        .from("table_data")
+        .select("*")
+        .eq("table_id", currentColumn.table_id)
+
+      if (dataFetchError) throw dataFetchError
+
+      // Update each row to rename the column key in row_data
+      for (const row of tableData) {
+        const updatedRowData = { ...row.row_data }
+
+        // If the old column name exists in the data, rename it to the new column name
+        if (oldColumnName in updatedRowData) {
+          updatedRowData[newColumnName] = updatedRowData[oldColumnName]
+          delete updatedRowData[oldColumnName]
+
+          // Update the row with the new column name
+          const { error: updateRowError } = await supabase
+            .from("table_data")
+            .update({
+              row_data: updatedRowData,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", row.id)
+
+          if (updateRowError) {
+            console.error(`Error updating row ${row.id}:`, updateRowError)
+          }
+        }
+      }
+    }
+
     return data as TableColumn
   }
 

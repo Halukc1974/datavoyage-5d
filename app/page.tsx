@@ -1,8 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { DynamicSidebar } from "@/components/dynamic-sidebar"
 import { TableView } from "@/components/table-view"
+import { DatabaseInit } from "@/components/database-init"
 import { SidebarProvider } from "@/components/ui/sidebar"
 
 export default function HomePage() {
@@ -11,6 +12,34 @@ export default function HomePage() {
     name: string
     type: "folder" | "table"
   } | null>(null)
+  const [showDatabaseInit, setShowDatabaseInit] = useState(false)
+
+  // Check if database needs initialization
+  useEffect(() => {
+    const checkDatabase = async () => {
+      try {
+        const response = await fetch("/api/sidebar")
+        if (!response.ok) {
+          const errorText = await response.text()
+          if (errorText.includes("schema cache") || errorText.includes("does not exist")) {
+            setShowDatabaseInit(true)
+          }
+        }
+      } catch (error) {
+        console.error("Error checking database:", error)
+      }
+    }
+
+    checkDatabase()
+  }, [])
+
+  if (showDatabaseInit) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <DatabaseInit />
+      </div>
+    )
+  }
 
   return (
     <SidebarProvider>
