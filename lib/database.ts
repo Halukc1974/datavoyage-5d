@@ -345,7 +345,7 @@ This will create all required tables (sidebar_items, dynamic_tables, table_colum
 
   static async createDynamicTable(
     table: Omit<DynamicTable, "id" | "created_at" | "updated_at">,
-  ): Promise<DynamicTable> {
+  ): Promise<{ success: boolean; dynamicTable?: DynamicTable; message?: string }> {
     const { data, error } = await supabase
       .from("dynamic_tables")
       .insert({
@@ -358,7 +358,55 @@ This will create all required tables (sidebar_items, dynamic_tables, table_colum
       .single()
 
     if (error) throw error
-    return data as DynamicTable
+    // Try to create a physical Postgres table for this dynamic table if DATABASE_URL is provided.
+    // This is optional: if DATABASE_URL is not set, we only create the metadata record and
+    // rely on the SQL migration or Supabase SQL editor to create the physical table.
+    try {
+      const dbUrl = process.env.DATABASE_URL
+      if (dbUrl) {
+        // create table using node-postgres if available
+        try {
+          // lazy require to avoid adding a hard dependency unless used
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { Client } = require("pg")
+          const client = new Client({ connectionString: dbUrl })
+          await client.connect()
+
+          const safeName = (data.table_name || `table_${data.id}`)
+            .toLowerCase()
+            .replace(/\s+/g, "_")
+            .replace(/[^a-z0-9_]/g, "")
+
+          const createSql = `CREATE TABLE IF NOT EXISTS ${safeName} (
+            id serial primary key,
+            created_at timestamptz default now(),
+            updated_at timestamptz default now(),
+            row_data jsonb
+          );`
+
+          await client.query(createSql)
+          await client.end()
+          console.log(`Created physical table: ${safeName}`)
+          return { success: true, dynamicTable: data as DynamicTable, message: `Created physical table: ${safeName}` }
+        } catch (e) {
+          console.error("Failed to create physical table via DATABASE_URL:", e)
+          return { success: false, dynamicTable: data as DynamicTable, message: String(e) }
+        }
+      } else {
+        console.log(
+          "DATABASE_URL not set — skipping automatic physical table creation. To create the physical table, run the SQL in Supabase SQL editor:"
+        )
+        console.log(
+          `CREATE TABLE ${data.table_name} (id serial primary key, created_at timestamptz default now(), updated_at timestamptz default now(), row_data jsonb);`
+        )
+        return { success: false, dynamicTable: data as DynamicTable, message: 'DATABASE_URL not set - physical table creation skipped' }
+      }
+    } catch (e) {
+      console.error("Error while attempting to create physical table:", e)
+      return { success: false, dynamicTable: data as DynamicTable, message: String(e) }
+    }
+    // If we didn't early-return above, return success with the metadata record
+    return { success: true, dynamicTable: data as DynamicTable }
   }
 
   // Column operations

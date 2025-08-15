@@ -26,7 +26,11 @@ interface TableViewProps {
 
 interface Column {
   id: number
-  name: string
+  // `column_name` is the DB key; `display_name` is the human label. Older code used `name`.
+  column_name?: string
+  display_name?: string
+  // Backwards-compatible alias for display_name
+  name?: string
   data_type: string
   is_required: boolean
   default_value?: string
@@ -57,17 +61,26 @@ export function TableView({ itemId, itemName }: TableViewProps) {
   useEffect(() => {
     const loadTabulator = async () => {
       if (typeof window !== "undefined") {
-        const originalError = window.console.error
-        window.console.error = (...args) => {
-          if (
-            args[0] &&
-            typeof args[0] === "string" &&
-            args[0].includes("ResizeObserver loop completed with undelivered notifications")
-          ) {
-            // Suppress ResizeObserver errors as they're usually harmless
-            return
+        // Safely override console.error to suppress noisy ResizeObserver messages.
+        const originalError = typeof window.console.error === "function" ? window.console.error.bind(window.console) : (..._args: any[]) => {}
+        window.console.error = (...args: any[]) => {
+          try {
+            if (
+              args[0] &&
+              typeof args[0] === "string" &&
+              args[0].includes("ResizeObserver loop completed with undelivered notifications")
+            ) {
+              // Suppress ResizeObserver errors as they're usually harmless
+              return
+            }
+          } catch (e) {
+            // ignore
           }
-          originalError.apply(console, args)
+          try {
+            originalError(...args)
+          } catch (e) {
+            // swallow to avoid breaking UI when console is unavailable
+          }
         }
 
         // Load Tabulator CSS
@@ -127,8 +140,10 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       // Load table data
       const dataResponse = await fetch(`/api/tables/${itemId}/data`)
       if (dataResponse.ok) {
-        const data = await dataResponse.json()
-        setTableData(data)
+  const data = await dataResponse.json()
+  // Normalize server shape { id, table_id, row_data } -> client shape { id, data }
+  const normalized = (data || []).map((r: any) => ({ id: r.id, data: r.row_data || {} }))
+  setTableData(normalized)
       }
     } catch (error) {
       console.error("Error loading table data:", error)
@@ -152,12 +167,13 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       }
 
   const tabulatorColumns: any[] = columns.map((col) => {
-        // Ensure column name exists and is valid
-        const columnName = col.name || `column_${col.id}`
-        const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
+        // Determine DB key and display title
+        const dbKey = col.column_name || col.name || `column_${col.id}`
+        const title = col.display_name || col.name || dbKey
+        const fieldName = String(dbKey).toLowerCase().replace(/\s+/g, "_")
 
         return {
-          title: columnName,
+          title: title,
           field: fieldName,
           editor: getEditorForType(col.data_type),
           formatter: getFormatterForType(col.data_type),
@@ -183,8 +199,16 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       tabulatorColumns.push({
         title: "Actions",
         field: "actions",
-        width: 100,
+        width: 140,
       formatter: () =>
+        '<div class="flex gap-2 items-center">' +
+        '<button class="save-row-btn text-green-600 hover:text-green-800 px-2 py-1 rounded" aria-label="Save">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">' +
+        '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />' +
+        '<path d="M17 21v-8H7v8" />' +
+        '<path d="M7 3v5h8" />' +
+        '</svg>' +
+        '</button>' +
         '<button class="delete-row-btn text-red-500 hover:text-red-700 px-2 py-1 rounded" aria-label="Delete">' +
         '<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">' +
         '<path d="M3 6h18" />' +
@@ -193,11 +217,20 @@ export function TableView({ itemId, itemName }: TableViewProps) {
         '<path d="M14 11v6" />' +
         '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />' +
         '</svg>' +
-        '</button>',
+        '</button>' +
+        '</div>',
         cellClick: (e: any, cell: any) => {
           // support clicking the svg inside the button by using closest
-          const btn = (e.target as HTMLElement).closest?.(".delete-row-btn")
-          if (btn) {
+          const saveBtn = (e.target as HTMLElement).closest?.(".save-row-btn")
+          if (saveBtn) {
+            const rowData = cell.getRow().getData()
+            // call updateRowData to persist the current row
+            updateRowData(rowData.id, rowData)
+            return
+          }
+
+          const delBtn = (e.target as HTMLElement).closest?.(".delete-row-btn")
+          if (delBtn) {
             const confirmed = window.confirm("Are you sure you want to delete this row?")
             if (confirmed) {
               deleteRow(cell.getRow().getData().id)
@@ -209,9 +242,9 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       const mappedData = tableData.map((row) => {
         const mappedRow: any = { id: row.id }
         columns.forEach((col) => {
-          const columnName = col.name || `column_${col.id}`
-          const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
-          mappedRow[fieldName] = row.data?.[columnName] || getDefaultValueForType(col.data_type, col.default_value)
+          const dbKey = col.column_name || col.name || `column_${col.id}`
+          const fieldName = String(dbKey).toLowerCase().replace(/\s+/g, "_")
+          mappedRow[fieldName] = row.data?.[dbKey] ?? getDefaultValueForType(col.data_type, col.default_value)
         })
         return mappedRow
       })
@@ -320,17 +353,21 @@ export function TableView({ itemId, itemName }: TableViewProps) {
     try {
       const originalData: any = {}
       columns.forEach((col) => {
-        const columnName = col.name || `column_${col.id}`
-        const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
+        const dbKey = col.column_name || col.name || `column_${col.id}`
+        const fieldName = String(dbKey).toLowerCase().replace(/\s+/g, "_")
         if (data[fieldName] !== undefined) {
-          originalData[columnName] = data[fieldName]
+          originalData[dbKey] = data[fieldName]
         }
       })
+
+      // Merge with existing server row data to avoid overwriting other fields
+      const existingRow = tableData.find((r) => r.id === rowId)
+      const mergedData = { ...(existingRow?.data || {}), ...originalData }
 
       const response = await fetch(`/api/tables/${itemId}/data/${rowId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data: originalData }),
+        body: JSON.stringify({ data: mergedData }),
       })
 
       if (!response.ok) {
@@ -396,24 +433,26 @@ export function TableView({ itemId, itemName }: TableViewProps) {
 
     const defaultData: any = { id: Date.now() }
     columns.forEach((col) => {
-      const columnName = col.name || `column_${col.id}`
-      const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
+      const dbKey = col.column_name || col.name || `column_${col.id}`
+      const fieldName = String(dbKey).toLowerCase().replace(/\s+/g, "_")
       defaultData[fieldName] = getDefaultValueForType(col.data_type, col.default_value)
     })
 
   tabulatorRef.current.addRow(defaultData, true)
 
-    // Map field names back to original column names for database
+    // Map field names back to DB column keys for database
     const originalData: any = {}
     columns.forEach((col) => {
-      const columnName = col.name || `column_${col.id}`
-      const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
-      originalData[columnName] = defaultData[fieldName]
+      const dbKey = col.column_name || col.name || `column_${col.id}`
+      const fieldName = String(dbKey).toLowerCase().replace(/\s+/g, "_")
+      originalData[dbKey] = defaultData[fieldName]
     })
 
     // Save to database; pass the client temp id so we can update the right row after server returns
     createNewRow(originalData, defaultData.id)
   }
+
+  // saveAllRows removed — cell edits now auto-save via cellEdited handler
 
   const createNewRow = async (data: any, clientTempId?: number) => {
     try {
@@ -441,13 +480,16 @@ export function TableView({ itemId, itemName }: TableViewProps) {
       if (clientTempId) {
         row = tabulatorRef.current.getRow(clientTempId)
       }
-      // Fallback: try to find a row with matching data fields (expensive, but safe)
+      // Fallback: try to find a row with matching mapped field names
       if (!row) {
         const rows = tabulatorRef.current.getRows()
         row = rows.find((r: any) => {
           const rdata = r.getData()
-          // attempt best-effort match: check if all mapped fields match
-          return Object.keys(data).every((key) => rdata[key] === data[key])
+          // map original data keys (DB keys) to field names used in Tabulator
+          return Object.keys(data).every((dbKey) => {
+            const fieldKey = String(dbKey).toLowerCase().replace(/\s+/g, "_")
+            return rdata[fieldKey] === data[dbKey]
+          })
         })
       }
       if (row) {
@@ -475,9 +517,9 @@ export function TableView({ itemId, itemName }: TableViewProps) {
     // serverRow is expected to have { id, table_id, row_data }
     const mapped: any = { id: serverRow.id }
     columns.forEach((col) => {
-      const columnName = col.name || `column_${col.id}`
-      const fieldName = columnName.toLowerCase().replace(/\s+/g, "_")
-      mapped[fieldName] = serverRow.row_data?.[columnName] ?? getDefaultValueForType(col.data_type, col.default_value)
+  const dbKey = col.column_name || col.name || `column_${col.id}`
+  const fieldName = String(dbKey).toLowerCase().replace(/\s+/g, "_")
+  mapped[fieldName] = serverRow.row_data?.[dbKey] ?? getDefaultValueForType(col.data_type, col.default_value)
     })
     return mapped
   }

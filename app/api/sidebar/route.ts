@@ -64,6 +64,7 @@ export async function POST(request: NextRequest) {
     })
 
     // If creating a table, also create the dynamic table record
+    let physicalCreation: { success: boolean; message?: string } | null = null
     if (item_type === "table") {
       const tableName = name
         .toLowerCase()
@@ -71,16 +72,18 @@ export async function POST(request: NextRequest) {
         .replace(/[^a-z0-9_]/g, "")
 
       console.log("Creating dynamic table record...")
-      await DatabaseService.createDynamicTable({
+      const result = await DatabaseService.createDynamicTable({
         sidebar_item_id: newItem.id,
         table_name: tableName,
         display_name: name,
         description: `Dynamic table: ${name}`,
       })
+
+      physicalCreation = { success: !!result.success, message: result.message }
     }
 
-    console.log("Successfully created sidebar item:", newItem)
-    return NextResponse.json(newItem)
+  console.log("Successfully created sidebar item:", newItem)
+  return NextResponse.json({ sidebarItem: newItem, physicalCreation })
   } catch (error: any) {
     console.error("Error creating sidebar item:", error)
     console.error("Error stack:", error.stack)

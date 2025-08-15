@@ -1,3 +1,5 @@
+import { NextResponse } from "next/server";
+
 export async function POST() {
   try {
     const { createClient } = await import("@supabase/supabase-js")
@@ -86,7 +88,7 @@ export async function POST() {
 
     if (error) {
       console.error("Database initialization error:", error)
-      return Response.json(
+  return NextResponse.json(
         {
           success: false,
           error: "Failed to initialize database. Please run the SQL script manually in Supabase SQL Editor.",
@@ -96,13 +98,13 @@ export async function POST() {
       )
     }
 
-    return Response.json({
+  return NextResponse.json({
       success: true,
       message: "Database initialized successfully with all required tables and sample data.",
     })
   } catch (error) {
     console.error("Database initialization error:", error)
-    return Response.json(
+  return NextResponse.json(
       {
         success: false,
         error: "Failed to initialize database. Please run the SQL script manually in Supabase SQL Editor.",

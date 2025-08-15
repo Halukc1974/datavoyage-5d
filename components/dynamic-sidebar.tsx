@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useToast } from "@/hooks/use-toast"
 import { ChevronRight, ChevronDown, Folder, Table, Plus, Edit, Trash2, FolderPlus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -27,6 +28,7 @@ interface DynamicSidebarProps {
 }
 
 export function DynamicSidebar({ selectedItem, onItemSelect }: DynamicSidebarProps) {
+  const { toast } = useToast()
   const [items, setItems] = useState<SidebarItem[]>([])
   const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set([]))
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
@@ -115,11 +117,24 @@ export function DynamicSidebar({ selectedItem, onItemSelect }: DynamicSidebarPro
       })
 
       if (response.ok) {
+        const body = await response.json()
         await loadSidebarItems()
         setIsCreateDialogOpen(false)
         setNewItemName("")
         setNewItemParent(null)
         setNewItemType("folder")
+
+        // Show toast about physical table creation if present
+        const physical = body?.physicalCreation
+        if (physical) {
+          if (physical.success) {
+            toast({ title: "Table created", description: physical.message || "Physical table created successfully." })
+          } else {
+            toast({ title: "Table metadata created", description: physical.message || "Physical table creation skipped or failed. You can run the SQL in Supabase SQL editor." })
+          }
+        } else {
+          toast({ title: "Item created", description: "Sidebar item created." })
+        }
       }
     } catch (error) {
       console.error("Failed to create item:", error)
